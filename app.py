@@ -146,7 +146,7 @@ def build_openiv_package(
     packs: list[tuple[Path, str]],
     package_path: Path,
 ) -> Path:
-    """Build an OIV installer whose every game target is explicitly under mods\\."""
+    """Build an OIV installer with game-relative paths; OpenIV routes them into mods when enabled."""
     package_path.parent.mkdir(parents=True, exist_ok=True)
 
     package = ET.Element(
@@ -167,7 +167,7 @@ def build_openiv_package(
     ET.SubElement(author, "displayName").text = "GTA V Add-On Installer"
     description_text = (
         "Installs add-on DLC packs and registers them in "
-        "mods\\update\\update.rpf only. No original game archive is a target."
+        "update\\update.rpf and DLC packs. Enable OpenIV Use mods Folder to keep all game changes inside mods."
     )
     ET.SubElement(metadata, "description").text = description_text
 
@@ -180,9 +180,9 @@ def build_openiv_package(
     ET.SubElement(colors, "iconBackground").text = "$FF3B5998"
 
     content = ET.SubElement(package, "content")
-    mods_file_root = PureWindowsPath(
-        "mods", "update", "x64", "dlcpacks"
-    )
+    # OIV paths must be relative to the game root. OpenIV prepends/routes to mods
+    # when the installer option "Use mods Folder" is enabled.
+    game_file_root = PureWindowsPath("update", "x64", "dlcpacks")
 
     # Add every file from every DLC folder, always to an explicit mods\\ destination.
     for source_root, pack_name in packs:
@@ -196,14 +196,14 @@ def build_openiv_package(
 
             relative = source_file.relative_to(source_root)
             package_source = PureWindowsPath(pack_name, *relative.parts)
-            game_target = mods_file_root / pack_name
+            game_target = game_file_root / pack_name
             for part in relative.parts:
                 game_target = game_target / part
 
             target_text = str(game_target)
-            if not target_text.lower().startswith("mods\\"):
+            if not target_text.lower().startswith("update\\x64\\dlcpacks\\"):
                 raise PermissionError(
-                    f"Внутренняя проверка запретила путь вне mods: {target_text}"
+                    f"Внутренняя проверка запретила неожиданный путь DLC: {target_text}"
                 )
 
             add_node = ET.SubElement(
@@ -289,20 +289,21 @@ def build_openiv_package(
                 )
                 package_zip.write(source_file, package_member)
 
-    # Verify the generated package is readable and the manifest contains only mods destinations.
+    # Verify game-relative destinations. OpenIV must have "Use mods Folder" enabled;
+    # this makes it route these exact paths into <game>\\mods, not original game files.
     with zipfile.ZipFile(package_path, "r") as package_zip:
         manifest = ET.fromstring(package_zip.read("assembly.xml"))
         for node in manifest.findall("./content/add"):
             target = (node.text or "").replace("/", "\\").lower()
-            if not target.startswith("mods\\"):
+            if not target.startswith("update\\x64\\dlcpacks\\"):
                 raise PermissionError(
-                    f"OIV-пакет содержит запрещённый путь: {node.text}"
+                    f"OIV-пакет содержит неожиданный путь DLC: {node.text}"
                 )
         for node in manifest.findall(".//archive"):
             target = node.attrib.get("path", "").replace("/", "\\").lower()
-            if not target.startswith("mods\\"):
+            if target != r"update\\update.rpf":
                 raise PermissionError(
-                    f"OIV-пакет содержит архив вне mods: {node.attrib.get('path')}"
+                    f"OIV-пакет содержит неожиданный путь RPF: {node.attrib.get('path')}"
                 )
             for xml_target in node.findall("./xml"):
                 xml_path = xml_target.attrib.get("path", "").replace("/", "\\").lower()
@@ -654,14 +655,15 @@ class InstallerApp:
                     "Файл .oiv передан приложению Windows по умолчанию. Убедись, что это OpenIV "
                     f"и в нём выбрана эта же папка GTA V: {game_root}. "
                     "Когда OpenIV спросит место установки, выбери Game folder / корень игры "
-                    "(не Mods folder): пути в пакете уже начинаются с mods\\\\. Затем нажми Install."
+                    "и обязательно оставь включённой опцию Use mods Folder. OpenIV сам направит "
+                    "пути в mods. Затем нажми Install."
                     if opened
                     else "Не удалось автоматически открыть OpenIV. "
                     "Дважды щёлкни по подготовленному .oiv-файлу вручную."
                 ),
                 f"Пакет: {package_path}",
                 "",
-                "Все целевые пути в пакете начинаются с mods\\.",
+                "ВАЖНО: в OpenIV должна быть включена опция Use mods Folder — только так изменения попадут в mods."
             ]
             result = "\n".join(lines)
             self.root.after(0, lambda result=result: self._finish(True, result))
