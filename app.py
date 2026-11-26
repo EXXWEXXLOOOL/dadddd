@@ -73,18 +73,27 @@ def ensure_inside_mods(path: Path, mods_root: Path) -> Path:
     return target_resolved
 
 
+def ensure_mods_root(game_root: Path) -> Path:
+    """Create the real mods directory, rejecting links and redirects."""
+    mods_root = game_root / "mods"
+    if mods_root.is_symlink():
+        raise PermissionError(
+            "Папка mods является символической ссылкой. Запись запрещена."
+        )
+    if not mods_root.exists():
+        mods_root.mkdir(parents=False, exist_ok=False)
+    if not mods_root.is_dir() or mods_root.resolve() != mods_root:
+        raise PermissionError(
+            "Папка mods является ссылкой, перенаправлением или не является папкой. "
+            "Запись запрещена."
+        )
+    return mods_root
+
+
 def ensure_mods_update_rpf(game_root: Path) -> tuple[Path, bool]:
     """Make sure mods/update/update.rpf exists; copy the original only if needed."""
     game_root = game_root.resolve()
-    mods_root = game_root / "mods"
-    mods_root.mkdir(parents=True, exist_ok=True)
-
-    # Refuse a redirected/symlinked mods folder that resolves outside the GTA folder.
-    if mods_root.resolve() != mods_root:
-        raise PermissionError(
-            "Папка mods является ссылкой или перенаправлением. "
-            "Установщик остановлен, чтобы гарантировать запись только в настоящую папку mods."
-        )
+    mods_root = ensure_mods_root(game_root)
 
     update_dir = mods_root / "update"
     ensure_inside_mods(update_dir, mods_root)
@@ -582,12 +591,7 @@ class InstallerApp:
                 if len({name.lower() for name in pack_names}) != len(pack_names):
                     raise ValueError("В архиве обнаружились повторяющиеся имена DLC.")
 
-                mods_root = game_root / "mods"
-                mods_root.mkdir(parents=True, exist_ok=True)
-                if mods_root.resolve() != mods_root:
-                    raise PermissionError(
-                        "Папка mods является ссылкой или перенаправлением. Запись запрещена."
-                    )
+                mods_root = ensure_mods_root(game_root)
 
                 mods_update = mods_root / "update"
                 ensure_inside_mods(mods_update, mods_root)
