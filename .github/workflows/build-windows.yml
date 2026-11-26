@@ -1,0 +1,96 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Compile Python files
+        run: python -m compileall -q .
+
+      - name: Run safety tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build standalone Windows EXE
+        run: >
+          python -m PyInstaller
+          --noconfirm
+          --clean
+          --onefile
+          --windowed
+          --name GTA5-Addon-Installer
+          --collect-all tkinterdnd2
+          app.py
+
+      - name: Prepare distribution ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item dist/GTA5-Addon-Installer.exe package/
+          Copy-Item README.md package/
+          @'
+          GTA V Add-On Installer - Windows build
+
+          1. Extract this ZIP to a normal folder.
+          2. Install OpenIV and configure it for your GTA V Legacy installation.
+          3. For RAR archives, install 7-Zip or WinRAR.
+          4. Run GTA5-Addon-Installer.exe.
+          5. Select the GTA V Legacy root folder (the folder containing GTA5.exe).
+          6. Drop one ZIP/RAR containing one or more DLC folders, or select a folder.
+          7. Leave the DLC name field empty for batch installs.
+          8. Review the generated OIV package in OpenIV. When asked for the install
+             location, choose Game folder / game root, not Mods folder. The package
+             already contains targets starting with mods\.
+          
+          This build is for GTA V Legacy. It does not install into GTA V Enhanced.
+          The installer targets game files only under GTA V\mods.
+          '@ | Set-Content -Path package/INSTALL.txt -Encoding UTF8
+          Compress-Archive -Path package/* -DestinationPath GTA5-Addon-Installer-Windows.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA5-Addon-Installer-Windows
+          path: GTA5-Addon-Installer-Windows.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish download release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1.0
+          name: GTA V Add-On Installer v0.1.0
+          body: |
+            First Windows standalone build of GTA V Add-On Installer.
+
+            - GTA V Legacy only.
+            - Installs DLCs from ZIP/RAR batches.
+            - Generates an OpenIV OIV package for mods-only targets.
+            - OpenIV is required to confirm and apply the package.
+            - 7-Zip or WinRAR is required for RAR input.
+          files: |
+            dist/GTA5-Addon-Installer.exe
+            GTA5-Addon-Installer-Windows.zip
+          make_latest: true
+          overwrite_files: true
