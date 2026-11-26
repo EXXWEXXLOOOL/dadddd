@@ -264,6 +264,12 @@ def build_openiv_package(
                 raise PermissionError(
                     f"OIV-пакет содержит архив вне mods: {node.attrib.get('path')}"
                 )
+            for xml_target in node.findall("./xml"):
+                xml_path = xml_target.attrib.get("path", "").replace("/", "\\").lower()
+                if xml_path != "common\\data\\dlclist.xml":
+                    raise PermissionError(
+                        f"OIV-пакет содержит неожиданную XML-цель: {xml_path}"
+                    )
 
     return package_path
 
@@ -564,7 +570,12 @@ class InstallerApp:
                 dlcpacks.mkdir(parents=True, exist_ok=True)
 
                 destinations = [dlcpacks / name for name in pack_names]
-                conflicts = [path for path in destinations if path.exists()]
+                for destination in destinations:
+                    ensure_inside_mods(destination, mods_root)
+                conflicts = [
+                    path for path in destinations
+                    if path.exists() or path.is_symlink()
+                ]
                 if conflicts:
                     conflict_text = "\n".join(str(path) for path in conflicts)
                     raise FileExistsError(
