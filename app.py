@@ -45,6 +45,21 @@ def find_dlc_roots(folder: Path) -> list[Path]:
     return candidates
 
 
+def validate_game_edition(game_root: Path) -> str:
+    """This OpenIV OIV workflow is currently limited to GTA V Legacy."""
+    if (game_root / "GTA5.exe").is_file():
+        return "Legacy"
+    if (game_root / "GTA5_Enhanced.exe").is_file():
+        raise RuntimeError(
+            "Обнаружена GTA V Enhanced. Эта версия установщика использует "
+            "OIV-установщик OpenIV для Legacy и пока не редактирует RPF Enhanced. "
+            "Ничего не установлено и файлы игры не изменены."
+        )
+    raise FileNotFoundError(
+        "В выбранной папке не найден GTA5.exe. Выбери корневую папку GTA V Legacy."
+    )
+
+
 def ensure_inside_mods(path: Path, mods_root: Path) -> Path:
     """Resolve and reject any target that escapes the game's mods directory."""
     mods_resolved = mods_root.resolve()
@@ -453,7 +468,7 @@ class InstallerApp:
             self.root.dnd_bind("<<Drop>>", self.on_drop)
         ttk.Label(
             frame,
-            text="Закрой GTA V. Изменения направляются только в папку mods; OpenIV откроется для подтверждения установки.",
+            text="Текущий режим рассчитан на GTA V Legacy. Все игровые изменения будут направлены только в mods; OpenIV откроется для подтверждения.",
             foreground="#9a5b00",
             wraplength=670,
         ).pack(anchor="w", pady=(14, 0))
@@ -533,6 +548,7 @@ class InstallerApp:
     def _install_worker(self, source, game, manual_name):
         try:
             game_root = game.resolve()
+            edition = validate_game_edition(game_root)
             with tempfile.TemporaryDirectory(prefix="gtav_addon_") as temp_dir:
                 extraction_dir = Path(temp_dir) / "extracted"
                 extraction_dir.mkdir()
@@ -601,6 +617,7 @@ class InstallerApp:
             lines = [
                 "Пакет установки подготовлен.",
                 "",
+                f"Редакция игры: GTA V {edition}",
                 f"DLC-пакетов найдено: {len(pack_names)}",
                 *[f"• {name}" for name in pack_names],
                 "",
