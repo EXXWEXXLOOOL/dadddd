@@ -27,7 +27,7 @@ class ModsOnlyPackageTests(unittest.TestCase):
             self.assertEqual(backup.read_bytes(), b"original-rpf-bytes")
             self.assertTrue(backup.resolve().is_relative_to((game / "mods").resolve()))
 
-    def test_oiv_targets_only_mods(self):
+    def test_oiv_uses_game_relative_paths_for_openiv_mods_mode(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             dlc = root / "BMW_M5"
@@ -49,13 +49,13 @@ class ModsOnlyPackageTests(unittest.TestCase):
                     for node in manifest.findall("./content/add")
                 ]
                 self.assertEqual(len(top_level_targets), 2)
-                self.assertTrue(all(path.lower().startswith("mods\\") for path in top_level_targets))
+                self.assertTrue(all(path.lower().startswith("update\\x64\\dlcpacks\\") for path in top_level_targets))
 
                 archives = manifest.findall("./content/archive")
                 self.assertEqual(len(archives), 1)
                 self.assertEqual(
                     archives[0].attrib["path"].lower(),
-                    "mods\\update\\update.rpf",
+                    "update\\update.rpf",
                 )
                 xml_command = archives[0].find("./xml")
                 self.assertIsNotNone(xml_command)
