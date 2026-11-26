@@ -21,7 +21,6 @@ except ImportError:
     TkinterDnD = None
 
 APP_NAME = "GTA V Add-On Installer"
-DLC_RELATIVE = Path("mods") / "update" / "x64" / "dlcpacks"
 DLCLIST_ENTRY = "dlcpacks:/{}/"
 MODS_RPF_RELATIVE = Path("mods") / "update" / "update.rpf"
 
@@ -72,8 +71,11 @@ def ensure_mods_update_rpf(game_root: Path) -> tuple[Path, bool]:
             "Установщик остановлен, чтобы не изменять посторонние файлы."
         )
 
+    update_dir = mods_root / "update"
+    ensure_inside_mods(update_dir, mods_root)
+    update_dir.mkdir(parents=True, exist_ok=True)
+
     target = game_root / MODS_RPF_RELATIVE
-    target.parent.mkdir(parents=True, exist_ok=True)
     ensure_inside_mods(target, mods_root)
 
     if target.exists():
@@ -250,7 +252,7 @@ def build_openiv_package(
     # Verify the generated package is readable and the manifest contains only mods destinations.
     with zipfile.ZipFile(package_path, "r") as package_zip:
         manifest = ET.fromstring(package_zip.read("assembly.xml"))
-        for node in manifest.findall(".//add"):
+        for node in manifest.findall("./content/add"):
             target = (node.text or "").replace("/", "\\").lower()
             if not target.startswith("mods\\"):
                 raise PermissionError(
@@ -549,9 +551,17 @@ class InstallerApp:
                         "Папка mods указывает за пределы GTA V. Запись запрещена."
                     )
 
-                dlcpacks = game_root / DLC_RELATIVE
-                dlcpacks.mkdir(parents=True, exist_ok=True)
+                mods_update = mods_root / "update"
+                ensure_inside_mods(mods_update, mods_root)
+                mods_update.mkdir(parents=True, exist_ok=True)
+
+                mods_x64 = mods_update / "x64"
+                ensure_inside_mods(mods_x64, mods_root)
+                mods_x64.mkdir(parents=True, exist_ok=True)
+
+                dlcpacks = mods_x64 / "dlcpacks"
                 ensure_inside_mods(dlcpacks, mods_root)
+                dlcpacks.mkdir(parents=True, exist_ok=True)
 
                 destinations = [dlcpacks / name for name in pack_names]
                 conflicts = [path for path in destinations if path.exists()]
