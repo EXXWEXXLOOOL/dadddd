@@ -169,7 +169,11 @@ def build_openiv_package(
         "Installs add-on DLC packs and registers them in "
         "update\\update.rpf and DLC packs. Enable OpenIV Use mods Folder to keep all game changes inside mods."
     )
-    ET.SubElement(metadata, "description").text = description_text
+    ET.SubElement(
+        metadata,
+        "description",
+        {"footerLink": "https://github.com/EXXWEXXLOOOL/dadddd", "footerLinkTitle": "Project"},
+    ).text = description_text
 
     colors = ET.SubElement(package, "colors")
     ET.SubElement(
