@@ -82,6 +82,27 @@ class ModsOnlyPackageTests(unittest.TestCase):
             (game / "GTA5.exe").write_bytes(b"placeholder")
             self.assertEqual(app.validate_game_edition(game), "Legacy")
 
+    def test_enhanced_marker_takes_priority_if_both_executables_exist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            game = Path(temp)
+            (game / "GTA5.exe").write_bytes(b"placeholder")
+            (game / "GTA5_Enhanced.exe").write_bytes(b"placeholder")
+            with self.assertRaises(RuntimeError):
+                app.validate_game_edition(game)
+
+    def test_redirected_mods_folder_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            target = root / "mods_elsewhere"
+            target.mkdir()
+            mods = root / "mods"
+            try:
+                mods.symlink_to(target, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("Directory symlinks are unavailable on this runner.")
+            with self.assertRaises(PermissionError):
+                app.ensure_mods_update_rpf(root)
+
     def test_path_guard_rejects_outside_mods(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
