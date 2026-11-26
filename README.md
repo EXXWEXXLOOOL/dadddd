@@ -14,7 +14,7 @@ car_mod.zip (или car_mod.rar)
     └── setup2.xml
 ```
 
-Имя DLC автоматически берётся из папки, в которой лежит `dlc.rpf`. В примере это `gt5`, поэтому программа создаст:
+Имя DLC автоматически берётся из папки, в которой лежит `dlc.rpf` (например, папка `gt5` даст имя `gt5`). В примере это `gt5`, поэтому программа создаст:
 
 `GTA V/mods/update/x64/dlcpacks/gt5/`
 
@@ -29,6 +29,7 @@ car_mod.zip (или car_mod.rar)
 ## ZIP и RAR
 
 - ZIP распаковывается встроенными средствами Python.
+- Архив можно выбрать через «Обзор» или перетащить прямо в окно программы; также можно перетащить папку DLC.
 - Для RAR должен быть установлен 7-Zip или WinRAR/UnRAR. Программа использует их командную утилиту. Если утилита не найдена, программа покажет понятную ошибку.
 - Поддерживаются файлы `dlc.rpf` в папке DLC, в том числе если внутри архива есть дополнительная корневая папка.
 
@@ -55,8 +56,8 @@ python app.py
 ## Сборка EXE
 
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed --name GTA5-Addon-Installer app.py
+pip install -r requirements.txt pyinstaller
+pyinstaller --onefile --windowed --collect-all tkinterdnd2 --name GTA5-Addon-Installer app.py
 ```
 
 EXE появится в папке `dist`. Это начальная сборка: RAR-файлы по-прежнему требуют наличия 7-Zip или WinRAR в Windows.
@@ -64,7 +65,7 @@ EXE появится в папке `dist`. Это начальная сборк�
 ## Установка
 
 1. Закройте GTA V.
-2. Выберите ZIP/RAR-архив или папку с DLC.
+2. Перетащите ZIP/RAR-архив или папку DLC в окно программы либо выберите через «Обзор».
 3. Выберите корневую папку GTA V.
 4. В OpenIV извлеките `dlclist.xml` из `mods/update/update.rpf/common/data/`.
 5. Выберите извлечённый XML.
