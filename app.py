@@ -143,7 +143,7 @@ def build_openiv_package(
     package = ET.Element(
         "package",
         {
-            "version": "2.1",
+            "version": "2.2",
             "id": "{" + str(uuid.uuid4()).upper() + "}",
             "target": "Five",
         },
@@ -156,13 +156,11 @@ def build_openiv_package(
     ET.SubElement(version, "minor").text = "0"
     author = ET.SubElement(metadata, "author")
     ET.SubElement(author, "displayName").text = "GTA V Add-On Installer"
-    ET.SubElement(
-        metadata,
-        "description",
-    ).text = (
+    description_text = (
         "Installs add-on DLC packs and registers them in "
         "mods\\update\\update.rpf only. No original game archive is a target."
     )
+    ET.SubElement(metadata, "description").text = description_text
 
     colors = ET.SubElement(package, "colors")
     ET.SubElement(
@@ -232,14 +230,32 @@ def build_openiv_package(
             "/SMandatoryPacksData/Paths"
             f"[not(Item[text()='{entry}'])]"
         )
-        add_node = ET.SubElement(xml_node, "add", {"xpath": xpath})
+        add_node = ET.SubElement(
+            xml_node,
+            "add",
+            {"xpath": xpath, "append": "Last"},
+        )
         ET.SubElement(add_node, "Item").text = entry
 
-    assembly = ET.tostring(
+    # OIV 2.2 documents description as CDATA; ElementTree doesn't emit CDATA itself.
+    assembly_text = ET.tostring(
         package,
-        encoding="utf-8",
-        xml_declaration=True,
+        encoding="unicode",
+        xml_declaration=False,
     )
+    escaped_description = (
+        description_text
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+    assembly_text = assembly_text.replace(
+        f"<description>{escaped_description}</description>",
+        f"<description><![CDATA[{description_text}]]></description>",
+    )
+    assembly = (
+        '<?xml version="1.0" encoding="utf-8"?>\n' + assembly_text
+    ).encode("utf-8")
 
     with zipfile.ZipFile(
         package_path,
