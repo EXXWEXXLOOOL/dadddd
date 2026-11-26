@@ -13,6 +13,12 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
+
 APP_NAME = "GTA V Add-On Installer"
 DLC_RELATIVE = Path("mods") / "update" / "x64" / "dlcpacks"
 DLCLIST_ENTRY = "dlcpacks:/{}/"
@@ -193,8 +199,10 @@ def prepare_source(source: Path, extraction_dir: Path) -> tuple[Path, str]:
     else:
         raise ValueError("Поддерживаются ZIP, RAR и папки с dlc.rpf.")
 
-    # The folder that directly contains dlc.rpf is the DLC folder (for example: gt5).
-    suggested_name = dlc_root.name if dlc_root.name else source.stem
+    # Use the directory containing dlc.rpf (e.g. "gt5"), not the archive filename.
+    base = source if source.is_dir() else extraction_dir
+    relative = dlc_root.relative_to(base)
+    suggested_name = relative.name if relative.parts else source.stem
     return dlc_root, safe_name(suggested_name)
 
 
@@ -237,8 +245,17 @@ class InstallerApp:
         self.install_button = ttk.Button(frame, text="УСТАНОВИТЬ МАШИНУ", command=self.start_install)
         self.install_button.pack(fill="x", ipady=8, pady=(4, 12))
 
+        ttk.Label(
+            frame,
+            text="Можно перетащить ZIP/RAR или папку DLC прямо в это окно.",
+            foreground="#666",
+        ).pack(anchor="w", pady=(0, 8))
+
         self.status = tk.StringVar(value="Готово к установке.")
         ttk.Label(frame, textvariable=self.status, wraplength=670).pack(anchor="w")
+        if DND_FILES is not None:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<Drop>>", self.on_drop)
         ttk.Label(
             frame,
             text="Перед установкой закройте GTA V. Программа не редактирует update.rpf напрямую.",
@@ -267,6 +284,21 @@ class InstallerApp:
         if path:
             self.source_var.set(path)
             # Empty name means auto-detect from the folder containing dlc.rpf.
+
+    def on_drop(self, event):
+        try:
+            dropped = self.root.tk.splitlist(event.data)
+            if len(dropped) != 1:
+                raise ValueError("Перетащите один ZIP/RAR-архив или одну папку DLC.")
+            path = Path(dropped[0])
+            if not path.exists():
+                raise FileNotFoundError("Перетащенный файл или папка не найдены.")
+            if not path.is_dir() and path.suffix.lower() not in (".zip", ".rar"):
+                raise ValueError("Поддерживаются ZIP, RAR или папки с dlc.rpf.")
+            self.source_var.set(str(path))
+            self.status.set(f"Источник выбран: {path.name}")
+        except Exception as exc:
+            messagebox.showerror("Не удалось принять файл", str(exc))
 
     def pick_game(self):
         path = filedialog.askdirectory(title="Выберите корневую папку GTA V")
@@ -378,7 +410,7 @@ class InstallerApp:
 
 
 def main():
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if TkinterDnD is not None else tk.Tk()
     try:
         style = ttk.Style()
         if "vista" in style.theme_names():
