@@ -456,6 +456,10 @@ class InstallerApp:
         except Exception as exc:
             for staging in staging_dirs:
                 shutil.rmtree(staging, ignore_errors=True)
+            # Roll back any folders already published if the batch did not finish.
+            for destination in published:
+                shutil.rmtree(destination, ignore_errors=True)
+            published.clear()
             error = str(exc)
             self.root.after(0, lambda error=error: self._finish(False, error))
 
