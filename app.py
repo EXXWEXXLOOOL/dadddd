@@ -47,14 +47,14 @@ def find_dlc_roots(folder: Path) -> list[Path]:
 
 def validate_game_edition(game_root: Path) -> str:
     """This OpenIV OIV workflow is currently limited to GTA V Legacy."""
-    if (game_root / "GTA5.exe").is_file():
-        return "Legacy"
     if (game_root / "GTA5_Enhanced.exe").is_file():
         raise RuntimeError(
             "Обнаружена GTA V Enhanced. Эта версия установщика использует "
             "OIV-установщик OpenIV для Legacy и пока не редактирует RPF Enhanced. "
             "Ничего не установлено и файлы игры не изменены."
         )
+    if (game_root / "GTA5.exe").is_file():
+        return "Legacy"
     raise FileNotFoundError(
         "В выбранной папке не найден GTA5.exe. Выбери корневую папку GTA V Legacy."
     )
@@ -80,10 +80,10 @@ def ensure_mods_update_rpf(game_root: Path) -> tuple[Path, bool]:
     mods_root.mkdir(parents=True, exist_ok=True)
 
     # Refuse a redirected/symlinked mods folder that resolves outside the GTA folder.
-    if mods_root.resolve().parent != game_root:
+    if mods_root.resolve() != mods_root:
         raise PermissionError(
-            "Папка mods указывает за пределы папки GTA V. "
-            "Установщик остановлен, чтобы не изменять посторонние файлы."
+            "Папка mods является ссылкой или перенаправлением. "
+            "Установщик остановлен, чтобы гарантировать запись только в настоящую папку mods."
         )
 
     update_dir = mods_root / "update"
@@ -584,9 +584,9 @@ class InstallerApp:
 
                 mods_root = game_root / "mods"
                 mods_root.mkdir(parents=True, exist_ok=True)
-                if mods_root.resolve().parent != game_root:
+                if mods_root.resolve() != mods_root:
                     raise PermissionError(
-                        "Папка mods указывает за пределы GTA V. Запись запрещена."
+                        "Папка mods является ссылкой или перенаправлением. Запись запрещена."
                     )
 
                 mods_update = mods_root / "update"
