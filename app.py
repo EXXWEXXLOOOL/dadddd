@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import threading
 import zipfile
@@ -88,62 +89,113 @@ def update_dlclist(xml_path: Path, pack_name: str) -> tuple[bool, Path | None]:
     return True, backup
 
 
-def install_from_folder(source: Path, destination: Path) -> None:
-    source_root = find_dlc_root(source)
-    destination.mkdir(parents=True, exist_ok=True)
+def copy_dlc_contents(source_root: Path, destination: Path) -> None:
+    if not (source_root / "dlc.rpf").is_file():
+        raise ValueError("В выбранной папке не найден dlc.rpf.")
+    destination.mkdir(parents=True, exist_ok=False)
     for item in source_root.iterdir():
         target = destination / item.name
         if item.is_dir():
-            shutil.copytree(item, target, dirs_exist_ok=True)
+            shutil.copytree(item, target)
         else:
             shutil.copy2(item, target)
 
 
-def install_from_zip(archive: Path, destination: Path) -> None:
+def extract_zip(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as zf:
-        members = [m for m in zf.infolist() if not m.is_dir()]
-        dlc_members = [
-            m for m in members
-            if Path(m.filename.replace("\\", "/")).name.lower() == "dlc.rpf"
-        ]
-        if not dlc_members:
-            raise ValueError("В ZIP-архиве не найден dlc.rpf.")
-        if len(dlc_members) > 1:
-            raise ValueError(
-                "В архиве несколько dlc.rpf. Используйте архив только с одним DLC."
-            )
-
-        dlc_member = dlc_members[0]
-        parts = Path(dlc_member.filename.replace("\\", "/")).parts
-        inner_prefix = "/".join(parts[:-1])
-        # Extract the directory containing dlc.rpf, not unrelated archive files.
         for member in zf.infolist():
-            normalized = member.filename.replace("\\", "/").rstrip("/")
-            if not normalized:
-                continue
-            if inner_prefix:
-                if normalized != inner_prefix and not normalized.startswith(inner_prefix + "/"):
-                    continue
-                relative = normalized[len(inner_prefix):].lstrip("/")
-            else:
-                relative = normalized
-            if not relative:
-                continue
-            target = destination.joinpath(*Path(relative).parts)
-            if member.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            # Prevent ZIP path traversal.
+            normalized = member.filename.replace("\\", "/")
+            parts = Path(normalized).parts
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or any(part in ("..", "") for part in parts)
+                or (parts and ":" in parts[0])
+            ):
+                raise ValueError("ZIP-архив содержит небезопасный путь.")
+            target = destination.joinpath(*parts)
             resolved = target.resolve()
             if destination.resolve() not in resolved.parents and resolved != destination.resolve():
                 raise ValueError("Архив содержит небезопасный путь.")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(member) as src, target.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, target.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
 
-    if not (destination / "dlc.rpf").is_file():
-        raise ValueError("Не удалось извлечь dlc.rpf из архива.")
+
+def find_rar_extractor() -> tuple[str, str] | None:
+    """Return (executable, kind); RAR needs 7-Zip or WinRAR/UnRAR installed."""
+    for name in ("7z", "7zz", "7za"):
+        executable = shutil.which(name)
+        if executable:
+            return executable, "7zip"
+
+    for name in ("UnRAR", "unrar"):
+        executable = shutil.which(name)
+        if executable:
+            return executable, "unrar"
+
+    program_dirs = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramW6432"),
+    ]
+    for base in filter(None, program_dirs):
+        for relative in (
+            Path("7-Zip") / "7z.exe",
+            Path("WinRAR") / "UnRAR.exe",
+            Path("WinRAR") / "UnRAR",
+        ):
+            candidate = Path(base) / relative
+            if candidate.is_file():
+                return str(candidate), "7zip" if "7-Zip" in str(relative) else "unrar"
+    return None
+
+
+def extract_rar(archive: Path, destination: Path) -> None:
+    extractor = find_rar_extractor()
+    if extractor is None:
+        raise RuntimeError(
+            "Для распаковки RAR установите 7-Zip или WinRAR. "
+            "После установки перезапустите программу."
+        )
+    executable, kind = extractor
+    destination.mkdir(parents=True, exist_ok=True)
+    if kind == "7zip":
+        command = [executable, "x", "-y", f"-o{destination}", str(archive)]
+    else:
+        command = [executable, "x", "-o+", str(archive), str(destination) + os.sep]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=900,
+    )
+    if result.returncode != 0:
+        details = (result.stdout or "") + "\n" + (result.stderr or "")
+        raise RuntimeError("Не удалось распаковать RAR.\n" + details[-1800:])
+
+
+def prepare_source(source: Path, extraction_dir: Path) -> tuple[Path, str]:
+    """Return DLC root and a suggested pack name taken from its parent folder."""
+    if source.is_dir():
+        dlc_root = find_dlc_root(source)
+    elif source.suffix.lower() == ".zip":
+        extract_zip(source, extraction_dir)
+        dlc_root = find_dlc_root(extraction_dir)
+    elif source.suffix.lower() == ".rar":
+        extract_rar(source, extraction_dir)
+        dlc_root = find_dlc_root(extraction_dir)
+    else:
+        raise ValueError("Поддерживаются ZIP, RAR и папки с dlc.rpf.")
+
+    # The folder that directly contains dlc.rpf is the DLC folder (for example: gt5).
+    suggested_name = dlc_root.name if dlc_root.name else source.stem
+    return dlc_root, safe_name(suggested_name)
 
 
 class InstallerApp:
@@ -163,13 +215,13 @@ class InstallerApp:
         ttk.Label(frame, text="GTA V Add-On Installer", font=("Segoe UI", 19, "bold")).pack(anchor="w")
         ttk.Label(
             frame,
-            text="Установка DLC-машин в mods/update/x64/dlcpacks и регистрация в dlclist.xml",
+            text="Перетащи ZIP/RAR с машиной: программа найдёт папку DLC и dlc.rpf, установит и пропишет имя в dlclist.xml",
             wraplength=670,
         ).pack(anchor="w", pady=(4, 18))
 
-        self._path_row(frame, "Архив ZIP или папка с dlc.rpf", self.source_var, self.pick_source)
+        self._path_row(frame, "Архив ZIP/RAR или папка DLC", self.source_var, self.pick_source)
         self._path_row(frame, "Папка GTA V", self.game_var, self.pick_game)
-        self._path_row(frame, "Извлечённый dlclist.xml (из update.rpf)", self.xml_var, self.pick_xml)
+        self._path_row(frame, "dlclist.xml (извлечённый через OpenIV)", self.xml_var, self.pick_xml)
 
         name_row = ttk.Frame(frame)
         name_row.pack(fill="x", pady=7)
@@ -177,7 +229,7 @@ class InstallerApp:
         ttk.Entry(name_row, textvariable=self.name_var).pack(side="left", fill="x", expand=True)
         ttk.Label(
             frame,
-            text="Имя DLC можно оставить пустым: оно будет взято из имени архива или папки.",
+            text="Оставь имя пустым: программа возьмёт его из папки, где лежит dlc.rpf (например, gt5).",
             foreground="#666",
             wraplength=670,
         ).pack(anchor="w", pady=(0, 12))
@@ -204,18 +256,17 @@ class InstallerApp:
     def pick_source(self):
         choice = messagebox.askyesnocancel(
             "Выбор источника",
-            "Да — выбрать ZIP-архив.\nНет — выбрать папку с DLC.",
+            "Да — выбрать ZIP или RAR.\nНет — выбрать папку с DLC.",
         )
         if choice is None:
             return
         if choice:
-            path = filedialog.askopenfilename(filetypes=[("ZIP архивы", "*.zip"), ("Все файлы", "*.*")])
+            path = filedialog.askopenfilename(filetypes=[("Архивы ZIP/RAR", "*.zip *.rar"), ("ZIP", "*.zip"), ("RAR", "*.rar"), ("Все файлы", "*.*")])
         else:
             path = filedialog.askdirectory()
         if path:
             self.source_var.set(path)
-            if not self.name_var.get().strip():
-                self.name_var.set(Path(path).stem)
+            # Empty name means auto-detect from the folder containing dlc.rpf.
 
     def pick_game(self):
         path = filedialog.askdirectory(title="Выберите корневую папку GTA V")
@@ -235,7 +286,10 @@ class InstallerApp:
         game_text = self.game_var.get().strip()
         xml_text = self.xml_var.get().strip()
         if not source_text or not game_text or not xml_text:
-            messagebox.showwarning("Не все данные указаны", "Выберите источник DLC, папку GTA V и dlclist.xml.")
+            messagebox.showwarning(
+                "Не все данные указаны",
+                "Выберите архив/папку DLC, папку GTA V и извлечённый dlclist.xml.",
+            )
             return
 
         source = Path(source_text)
@@ -246,47 +300,73 @@ class InstallerApp:
             return
 
         try:
-            pack_name = safe_name(self.name_var.get() or source.stem)
+            manual_name = safe_name(self.name_var.get()) if self.name_var.get().strip() else None
             validate_dlclist(xml_path)
         except Exception as exc:
             messagebox.showerror("Проверка не пройдена", str(exc))
             return
 
-        destination = game / DLC_RELATIVE / pack_name
-        if destination.exists():
-            if not messagebox.askyesno(
-                "DLC уже существует",
-                f"Папка {destination} уже существует. Перезаписать её содержимое?",
-            ):
-                return
-
         self.install_button.configure(state="disabled")
-        self.status.set("Установка…")
+        self.status.set("Анализ архива и установка…")
         threading.Thread(
             target=self._install_worker,
-            args=(source, destination, xml_path, pack_name),
+            args=(source, game, xml_path, manual_name),
             daemon=True,
         ).start()
 
-    def _install_worker(self, source, destination, xml_path, pack_name):
+    def _install_worker(self, source, game, xml_path, manual_name):
+        destination = None
         try:
-            if source.is_dir():
-                install_from_folder(source, destination)
-            elif source.suffix.lower() == ".zip":
-                install_from_zip(source, destination)
-            else:
-                raise ValueError("Поддерживаются ZIP-архивы и папки с dlc.rpf.")
+            dlcpacks = game / DLC_RELATIVE
+            dlcpacks.mkdir(parents=True, exist_ok=True)
 
-            added, backup = update_dlclist(xml_path, pack_name)
+            with tempfile.TemporaryDirectory(prefix="gtav_addon_") as temp_dir:
+                extraction_dir = Path(temp_dir) / "extracted"
+                extraction_dir.mkdir()
+                source_root, suggested_name = prepare_source(source, extraction_dir)
+                pack_name = manual_name or suggested_name
+                destination = dlcpacks / pack_name
+
+                if destination.exists():
+                    raise FileExistsError(
+                        f"DLC «{pack_name}» уже существует:\n{destination}\n\n"
+                        "Чтобы не перезаписать установленную машину, выберите другое имя DLC "
+                        "или удалите старую папку вручную."
+                    )
+
+                staging = Path(tempfile.mkdtemp(
+                    prefix=f".{pack_name}.installing-",
+                    dir=dlcpacks,
+                ))
+                try:
+                    for item in source_root.iterdir():
+                        target = staging / item.name
+                        if item.is_dir():
+                            shutil.copytree(item, target)
+                        else:
+                            shutil.copy2(item, target)
+                    (staging / "dlc.rpf").stat()
+                    staging.rename(destination)
+                except Exception:
+                    shutil.rmtree(staging, ignore_errors=True)
+                    raise
+
+            try:
+                added, backup = update_dlclist(xml_path, pack_name)
+            except Exception:
+                shutil.rmtree(destination, ignore_errors=True)
+                raise
+
             result = (
                 f"Установка завершена!\n\nDLC: {pack_name}\n"
                 f"Папка: {destination}\n"
                 f"Запись в dlclist.xml: {'добавлена' if added else 'уже существовала'}\n"
                 f"Резервная копия: {backup if backup else 'не требовалась'}"
             )
-            self.root.after(0, lambda: self._finish(True, result))
+            self.root.after(0, lambda result=result: self._finish(True, result))
         except Exception as exc:
-            self.root.after(0, lambda: self._finish(False, str(exc)))
+            error = str(exc)
+            self.root.after(0, lambda error=error: self._finish(False, error))
 
     def _finish(self, success, message):
         self.install_button.configure(state="normal")
