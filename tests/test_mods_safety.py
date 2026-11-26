@@ -69,6 +69,19 @@ class ModsOnlyPackageTests(unittest.TestCase):
                     "dlcpacks:/BMW_M5/",
                 )
 
+    def test_enhanced_game_is_blocked_before_modifications(self):
+        with tempfile.TemporaryDirectory() as temp:
+            game = Path(temp)
+            (game / "GTA5_Enhanced.exe").write_bytes(b"placeholder")
+            with self.assertRaises(RuntimeError):
+                app.validate_game_edition(game)
+
+    def test_legacy_game_is_detected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            game = Path(temp)
+            (game / "GTA5.exe").write_bytes(b"placeholder")
+            self.assertEqual(app.validate_game_edition(game), "Legacy")
+
     def test_path_guard_rejects_outside_mods(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
