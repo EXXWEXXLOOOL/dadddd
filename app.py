@@ -6,10 +6,11 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 import zipfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -22,6 +23,7 @@ except ImportError:
 APP_NAME = "GTA V Add-On Installer"
 DLC_RELATIVE = Path("mods") / "update" / "x64" / "dlcpacks"
 DLCLIST_ENTRY = "dlcpacks:/{}/"
+MODS_RPF_RELATIVE = Path("mods") / "update" / "update.rpf"
 
 
 def safe_name(value: str) -> str:
@@ -44,72 +46,237 @@ def find_dlc_roots(folder: Path) -> list[Path]:
     return candidates
 
 
-def validate_dlclist(xml_path: Path) -> str:
-    if not xml_path.is_file():
-        raise FileNotFoundError(f"Файл не найден: {xml_path}")
-    content = xml_path.read_text(encoding="utf-8-sig")
+def ensure_inside_mods(path: Path, mods_root: Path) -> Path:
+    """Resolve and reject any target that escapes the game's mods directory."""
+    mods_resolved = mods_root.resolve()
+    target_resolved = path.resolve()
     try:
-        ET.fromstring(content)
-    except ET.ParseError as exc:
-        raise ValueError(f"Некорректный XML: {exc}") from exc
-    if not re.search(r"</Paths\s*>", content, re.IGNORECASE):
-        raise ValueError("В XML не найден закрывающий тег </Paths>.")
-    return content
+        target_resolved.relative_to(mods_resolved)
+    except ValueError as exc:
+        raise PermissionError(
+            f"Запрещена запись вне папки mods: {target_resolved}"
+        ) from exc
+    return target_resolved
 
 
-def update_dlclist(xml_path: Path, pack_names: list[str]) -> tuple[list[str], Path | None]:
-    content = validate_dlclist(xml_path)
-    missing: list[str] = []
-    for pack_name in pack_names:
-        entry = DLCLIST_ENTRY.format(pack_name)
-        pattern = re.compile(
-            r"<Item>\s*" + re.escape(entry) + r"\s*</Item>",
-            re.IGNORECASE,
-        )
-        if not pattern.search(content):
-            missing.append(pack_name)
+def ensure_mods_update_rpf(game_root: Path) -> tuple[Path, bool]:
+    """Make sure mods/update/update.rpf exists; copy the original only if needed."""
+    game_root = game_root.resolve()
+    mods_root = game_root / "mods"
+    mods_root.mkdir(parents=True, exist_ok=True)
 
-    if not missing:
-        return [], None
-
-    backup = xml_path.with_name(
-        f"{xml_path.name}.backup-{datetime.now():%Y%m%d-%H%M%S-%f}"
-    )
-    shutil.copy2(xml_path, backup)
-
-    updated = content
-    for pack_name in missing:
-        entry = DLCLIST_ENTRY.format(pack_name)
-        updated = re.sub(
-            r"(</Paths\s*>)",
-            f"    <Item>{entry}</Item>\n\\1",
-            updated,
-            count=1,
-            flags=re.IGNORECASE,
+    # Refuse a redirected/symlinked mods folder that resolves outside the GTA folder.
+    if mods_root.resolve().parent != game_root:
+        raise PermissionError(
+            "Папка mods указывает за пределы папки GTA V. "
+            "Установщик остановлен, чтобы не изменять посторонние файлы."
         )
 
-    # Validate the full XML before replacing the original file.
-    ET.fromstring(updated)
-    temp_path = xml_path.with_name(f".{xml_path.name}.{os.getpid()}.tmp")
+    target = game_root / MODS_RPF_RELATIVE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_inside_mods(target, mods_root)
+
+    if target.exists():
+        if not target.is_file():
+            raise ValueError(f"Вместо update.rpf найден не файл: {target}")
+        return target, False
+
+    original = game_root / "update" / "update.rpf"
+    if not original.is_file():
+        raise FileNotFoundError(
+            "Не найден mods\\update\\update.rpf и не удалось найти исходный "
+            "update\\update.rpf для создания копии."
+        )
+
+    temporary_copy = target.with_name(f".{target.name}.{uuid.uuid4().hex}.copying")
     try:
-        temp_path.write_text(updated, encoding="utf-8")
-        os.replace(temp_path, xml_path)
+        shutil.copy2(original, temporary_copy)
+        if temporary_copy.stat().st_size != original.stat().st_size:
+            raise OSError("Копия update.rpf получилась неполной.")
+        os.replace(temporary_copy, target)
     finally:
-        if temp_path.exists():
-            temp_path.unlink()
-    return missing, backup
+        if temporary_copy.exists():
+            temporary_copy.unlink()
+
+    ensure_inside_mods(target, mods_root)
+    return target, True
 
 
-def copy_dlc_contents(source_root: Path, destination: Path) -> None:
-    if not (source_root / "dlc.rpf").is_file():
-        raise ValueError("В выбранной папке не найден dlc.rpf.")
-    destination.mkdir(parents=True, exist_ok=False)
-    for item in source_root.iterdir():
-        target = destination / item.name
-        if item.is_dir():
-            shutil.copytree(item, target)
-        else:
-            shutil.copy2(item, target)
+def backup_mods_update_rpf(archive_path: Path, mods_root: Path) -> Path:
+    """Create a timestamped backup beside update.rpf, inside mods only."""
+    ensure_inside_mods(archive_path, mods_root)
+    backup = archive_path.with_name(
+        f"{archive_path.name}.backup-{datetime.now():%Y%m%d-%H%M%S-%f}"
+    )
+    ensure_inside_mods(backup, mods_root)
+    shutil.copy2(archive_path, backup)
+    if backup.stat().st_size != archive_path.stat().st_size:
+        backup.unlink(missing_ok=True)
+        raise OSError("Не удалось проверить резервную копию update.rpf.")
+    return backup
+
+
+def build_openiv_package(
+    packs: list[tuple[Path, str]],
+    package_path: Path,
+) -> Path:
+    """Build an OIV installer whose every game target is explicitly under mods\\."""
+    package_path.parent.mkdir(parents=True, exist_ok=True)
+
+    package = ET.Element(
+        "package",
+        {
+            "version": "2.1",
+            "id": "{" + str(uuid.uuid4()).upper() + "}",
+            "target": "Five",
+        },
+    )
+
+    metadata = ET.SubElement(package, "metadata")
+    ET.SubElement(metadata, "name").text = "GTA V Add-On Installer"
+    version = ET.SubElement(metadata, "version")
+    ET.SubElement(version, "major").text = "1"
+    ET.SubElement(version, "minor").text = "0"
+    author = ET.SubElement(metadata, "author")
+    ET.SubElement(author, "displayName").text = "GTA V Add-On Installer"
+    ET.SubElement(
+        metadata,
+        "description",
+    ).text = (
+        "Installs add-on DLC packs and registers them in "
+        "mods\\update\\update.rpf only. No original game archive is a target."
+    )
+
+    colors = ET.SubElement(package, "colors")
+    ET.SubElement(
+        colors,
+        "headerBackground",
+        {"useBlackTextColor": "False"},
+    ).text = "$FF202A44"
+    ET.SubElement(colors, "iconBackground").text = "$FF3B5998"
+
+    content = ET.SubElement(package, "content")
+    mods_file_root = PureWindowsPath(
+        "mods", "update", "x64", "dlcpacks"
+    )
+
+    # Add every file from every DLC folder, always to an explicit mods\\ destination.
+    for source_root, pack_name in packs:
+        for source_file in sorted(source_root.rglob("*")):
+            if source_file.is_symlink():
+                raise ValueError(
+                    f"В DLC обнаружена символическая ссылка: {source_file}"
+                )
+            if not source_file.is_file():
+                continue
+
+            relative = source_file.relative_to(source_root)
+            package_source = PureWindowsPath(pack_name, *relative.parts)
+            game_target = mods_file_root / pack_name
+            for part in relative.parts:
+                game_target = game_target / part
+
+            target_text = str(game_target)
+            if not target_text.lower().startswith("mods\\"):
+                raise PermissionError(
+                    f"Внутренняя проверка запретила путь вне mods: {target_text}"
+                )
+
+            add_node = ET.SubElement(
+                content,
+                "add",
+                {"source": str(package_source).replace("\\", "/")},
+            )
+            add_node.text = target_text
+
+    # OpenIV applies this XPath edit inside this exact archive path, not update\\update.rpf.
+    archive_path = r"mods\update\update.rpf"
+    if not archive_path.lower().startswith("mods\\"):
+        raise PermissionError("Запрещён путь к RPF вне папки mods.")
+
+    archive_node = ET.SubElement(
+        content,
+        "archive",
+        {
+            "path": archive_path,
+            "createIfNotExist": "False",
+            "type": "RPF7",
+        },
+    )
+    xml_node = ET.SubElement(
+        archive_node,
+        "xml",
+        {"path": r"common\data\dlclist.xml"},
+    )
+
+    for _, pack_name in packs:
+        entry = DLCLIST_ENTRY.format(pack_name)
+        xpath = (
+            "/SMandatoryPacksData/Paths"
+            f"[not(Item[text()='{entry}'])]"
+        )
+        add_node = ET.SubElement(xml_node, "add", {"xpath": xpath})
+        ET.SubElement(add_node, "Item").text = entry
+
+    assembly = ET.tostring(
+        package,
+        encoding="utf-8",
+        xml_declaration=True,
+    )
+
+    with zipfile.ZipFile(
+        package_path,
+        "w",
+        compression=zipfile.ZIP_DEFLATED,
+        compresslevel=6,
+    ) as package_zip:
+        package_zip.writestr("assembly.xml", assembly)
+        package_zip.writestr(
+            "content/README.txt",
+            "Generated by GTA V Add-On Installer. "
+            "All game targets in this OIV package are under the mods folder.\n",
+        )
+        for source_root, pack_name in packs:
+            for source_file in sorted(source_root.rglob("*")):
+                if not source_file.is_file():
+                    continue
+                relative = source_file.relative_to(source_root)
+                package_member = (
+                    PureWindowsPath("content", pack_name, *relative.parts)
+                    .as_posix()
+                )
+                package_zip.write(source_file, package_member)
+
+    # Verify the generated package is readable and the manifest contains only mods destinations.
+    with zipfile.ZipFile(package_path, "r") as package_zip:
+        manifest = ET.fromstring(package_zip.read("assembly.xml"))
+        for node in manifest.findall(".//add"):
+            target = (node.text or "").replace("/", "\\").lower()
+            if not target.startswith("mods\\"):
+                raise PermissionError(
+                    f"OIV-пакет содержит запрещённый путь: {node.text}"
+                )
+        for node in manifest.findall(".//archive"):
+            target = node.attrib.get("path", "").replace("/", "\\").lower()
+            if not target.startswith("mods\\"):
+                raise PermissionError(
+                    f"OIV-пакет содержит архив вне mods: {node.attrib.get('path')}"
+                )
+
+    return package_path
+
+
+def launch_openiv_package(package_path: Path) -> bool:
+    """Open the generated OIV package through Windows file association."""
+    if os.name != "nt":
+        return False
+    try:
+        os.startfile(str(package_path))  # type: ignore[attr-defined]
+        return True
+    except OSError:
+        return False
+
+
 
 
 def extract_zip(archive: Path, destination: Path) -> None:
@@ -232,12 +399,11 @@ class InstallerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(APP_NAME)
-        root.geometry("720x510")
-        root.minsize(620, 460)
+        root.geometry("720x440")
+        root.minsize(620, 420)
 
         self.source_var = tk.StringVar()
         self.game_var = tk.StringVar()
-        self.xml_var = tk.StringVar()
         self.name_var = tk.StringVar()
 
         frame = ttk.Frame(root, padding=18)
@@ -245,13 +411,12 @@ class InstallerApp:
         ttk.Label(frame, text="GTA V Add-On Installer", font=("Segoe UI", 19, "bold")).pack(anchor="w")
         ttk.Label(
             frame,
-            text="Перетащи один ZIP/RAR с одной или несколькими машинами: программа найдёт все папки с dlc.rpf и установит их пакетно.",
+            text="Перетащи ZIP/RAR с машинами. Программа подготовит установочный пакет OpenIV, который запишет DLC и dlclist.xml только в mods.",
             wraplength=670,
         ).pack(anchor="w", pady=(4, 18))
 
         self._path_row(frame, "Архив ZIP/RAR или папка DLC", self.source_var, self.pick_source)
         self._path_row(frame, "Папка GTA V", self.game_var, self.pick_game)
-        self._path_row(frame, "dlclist.xml (извлечённый через OpenIV)", self.xml_var, self.pick_xml)
 
         name_row = ttk.Frame(frame)
         name_row.pack(fill="x", pady=7)
@@ -259,7 +424,7 @@ class InstallerApp:
         ttk.Entry(name_row, textvariable=self.name_var).pack(side="left", fill="x", expand=True)
         ttk.Label(
             frame,
-            text="Оставь поле пустым для автоимён из папок с dlc.rpf. Для архива с несколькими машинами поле должно быть пустым.",
+            text="Оставь поле пустым для автоимён. Для архива с несколькими машинами имя определяется по каждой папке.",
             foreground="#666",
             wraplength=670,
         ).pack(anchor="w", pady=(0, 12))
@@ -280,7 +445,7 @@ class InstallerApp:
             self.root.dnd_bind("<<Drop>>", self.on_drop)
         ttk.Label(
             frame,
-            text="Перед установкой закройте GTA V. Программа не редактирует update.rpf напрямую.",
+            text="Закрой GTA V. Изменения направляются только в папку mods; OpenIV откроется для подтверждения установки.",
             foreground="#9a5b00",
             wraplength=670,
         ).pack(anchor="w", pady=(14, 0))
@@ -327,54 +492,39 @@ class InstallerApp:
         if path:
             self.game_var.set(path)
 
-    def pick_xml(self):
-        path = filedialog.askopenfilename(
-            title="Выберите извлечённый dlclist.xml",
-            filetypes=[("XML файлы", "*.xml"), ("Все файлы", "*.*")],
-        )
-        if path:
-            self.xml_var.set(path)
-
     def start_install(self):
         source_text = self.source_var.get().strip()
         game_text = self.game_var.get().strip()
-        xml_text = self.xml_var.get().strip()
-        if not source_text or not game_text or not xml_text:
+        if not source_text or not game_text:
             messagebox.showwarning(
                 "Не все данные указаны",
-                "Выберите архив/папку с DLC, папку GTA V и извлечённый dlclist.xml.",
+                "Выбери архив/папку с DLC и корневую папку GTA V.",
             )
             return
 
         source = Path(source_text)
         game = Path(game_text)
-        xml_path = Path(xml_text)
         if not source.exists() or not game.is_dir():
-            messagebox.showerror("Ошибка", "Проверьте выбранные пути.")
+            messagebox.showerror("Ошибка", "Проверь выбранные пути.")
             return
 
         try:
             manual_name = safe_name(self.name_var.get()) if self.name_var.get().strip() else None
-            validate_dlclist(xml_path)
         except Exception as exc:
             messagebox.showerror("Проверка не пройдена", str(exc))
             return
 
         self.install_button.configure(state="disabled")
-        self.status.set("Анализ архива и установка…")
+        self.status.set("Проверка архива и подготовка пакета OpenIV…")
         threading.Thread(
             target=self._install_worker,
-            args=(source, game, xml_path, manual_name),
+            args=(source, game, manual_name),
             daemon=True,
         ).start()
 
-    def _install_worker(self, source, game, xml_path, manual_name):
-        published: list[Path] = []
-        staging_dirs: list[Path] = []
+    def _install_worker(self, source, game, manual_name):
         try:
-            dlcpacks = game / DLC_RELATIVE
-            dlcpacks.mkdir(parents=True, exist_ok=True)
-
+            game_root = game.resolve()
             with tempfile.TemporaryDirectory(prefix="gtav_addon_") as temp_dir:
                 extraction_dir = Path(temp_dir) / "extracted"
                 extraction_dir.mkdir()
@@ -383,83 +533,79 @@ class InstallerApp:
                 if manual_name and len(packs) != 1:
                     raise ValueError(
                         "Поле «Имя DLC» можно заполнять только при установке одной машины. "
-                        "Для архива с несколькими машинами очистите это поле."
+                        "Для архива с несколькими машинами очисти это поле."
                     )
                 if manual_name:
                     packs = [(packs[0][0], manual_name)]
 
                 pack_names = [name for _, name in packs]
-                destinations = [dlcpacks / name for name in pack_names]
+                if len({name.lower() for name in pack_names}) != len(pack_names):
+                    raise ValueError("В архиве обнаружились повторяющиеся имена DLC.")
 
-                # Preflight the complete batch before copying anything.
+                mods_root = game_root / "mods"
+                mods_root.mkdir(parents=True, exist_ok=True)
+                if mods_root.resolve().parent != game_root:
+                    raise PermissionError(
+                        "Папка mods указывает за пределы GTA V. Запись запрещена."
+                    )
+
+                dlcpacks = game_root / DLC_RELATIVE
+                dlcpacks.mkdir(parents=True, exist_ok=True)
+                ensure_inside_mods(dlcpacks, mods_root)
+
+                destinations = [dlcpacks / name for name in pack_names]
                 conflicts = [path for path in destinations if path.exists()]
                 if conflicts:
                     conflict_text = "\n".join(str(path) for path in conflicts)
                     raise FileExistsError(
-                        "Установка отменена: следующие папки DLC уже существуют:\n"
-                        f"{conflict_text}\n\n"
-                        "Ничего не перезаписано. Удалите старые папки вручную "
-                        "или переименуйте папки DLC в архиве."
+                        "Установка отменена: эти папки уже существуют:\n"
+                        f"{conflict_text}\n\nНичего не перезаписано."
                     )
 
-                # Copy every DLC to a temporary sibling folder first.
-                for (source_root, pack_name), destination in zip(packs, destinations):
-                    staging = Path(tempfile.mkdtemp(
-                        prefix=f".{pack_name}.installing-",
-                        dir=dlcpacks,
-                    ))
-                    staging_dirs.append(staging)
-                    for item in source_root.iterdir():
-                        target = staging / item.name
-                        if item.is_dir():
-                            shutil.copytree(item, target)
-                        else:
-                            shutil.copy2(item, target)
-                    if not (staging / "dlc.rpf").is_file():
-                        raise ValueError(
-                            f"В папке «{pack_name}» после копирования не найден dlc.rpf."
-                        )
+                # The only RPF archive targeted by the OIV package is inside mods.
+                mods_update_rpf, copied_from_original = ensure_mods_update_rpf(game_root)
+                ensure_inside_mods(mods_update_rpf, mods_root)
+                backup = backup_mods_update_rpf(mods_update_rpf, mods_root)
 
-                # Publish only after all DLCs have been staged successfully.
-                for staging, destination in zip(staging_dirs, destinations):
-                    if destination.exists():
-                        raise FileExistsError(
-                            f"Папка DLC появилась во время установки: {destination}"
-                        )
-                    staging.rename(destination)
-                    published.append(destination)
-                staging_dirs.clear()
+                package_dir = Path(tempfile.gettempdir()) / "GTA5AddonInstaller" / "Packages"
+                package_name = (
+                    f"Install_DLC_{datetime.now():%Y%m%d_%H%M%S}_"
+                    f"{uuid.uuid4().hex[:8]}.oiv"
+                )
+                package_path = package_dir / package_name
+                build_openiv_package(packs, package_path)
 
-            try:
-                added_names, backup = update_dlclist(xml_path, pack_names)
-            except Exception:
-                for destination in published:
-                    shutil.rmtree(destination, ignore_errors=True)
-                published.clear()
-                raise
+                opened = launch_openiv_package(package_path)
 
-            already_registered = [name for name in pack_names if name not in added_names]
             lines = [
-                "Пакетная установка завершена!",
+                "Пакет установки подготовлен.",
                 "",
-                f"Установлено DLC: {len(pack_names)}",
+                f"DLC-пакетов найдено: {len(pack_names)}",
                 *[f"• {name}" for name in pack_names],
                 "",
-                f"Новых записей в dlclist.xml: {len(added_names)}",
+                f"Архив для редактирования: {mods_update_rpf}",
+                f"Резервная копия: {backup}",
+                (
+                    "Копия update.rpf создана из оригинала в mods; "
+                    "оригинальный update.rpf не изменялся."
+                    if copied_from_original
+                    else "Используется уже существующий mods\\update\\update.rpf."
+                ),
+                "",
+                (
+                    "OpenIV открыт с подготовленным пакетом. Нажми Install/Установить "
+                    "в окне OpenIV, чтобы завершить установку."
+                    if opened
+                    else "Не удалось автоматически открыть OpenIV. "
+                    "Дважды щёлкни по подготовленному .oiv-файлу вручную."
+                ),
+                f"Пакет: {package_path}",
+                "",
+                "Все целевые пути в пакете начинаются с mods\\.",
             ]
-            if already_registered:
-                lines.append("Уже были в dlclist.xml: " + ", ".join(already_registered))
-            lines.append(f"Резервная копия XML: {backup if backup else 'не требовалась'}")
-            lines.append(f"Папка установки: {dlcpacks}")
             result = "\n".join(lines)
             self.root.after(0, lambda result=result: self._finish(True, result))
         except Exception as exc:
-            for staging in staging_dirs:
-                shutil.rmtree(staging, ignore_errors=True)
-            # Roll back any folders already published if the batch did not finish.
-            for destination in published:
-                shutil.rmtree(destination, ignore_errors=True)
-            published.clear()
             error = str(exc)
             self.root.after(0, lambda error=error: self._finish(False, error))
 
