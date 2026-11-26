@@ -229,8 +229,8 @@ def build_openiv_package(
     with zipfile.ZipFile(
         package_path,
         "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=6,
+        # DLC RPF files are already packed; storing them avoids a slow second compression pass.
+        compression=zipfile.ZIP_STORED,
     ) as package_zip:
         package_zip.writestr("assembly.xml", assembly)
         package_zip.writestr(
