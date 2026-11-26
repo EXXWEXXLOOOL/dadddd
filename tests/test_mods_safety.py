@@ -39,7 +39,11 @@ class ModsOnlyPackageTests(unittest.TestCase):
             app.build_openiv_package([(dlc, "BMW_M5")], package_path)
 
             with zipfile.ZipFile(package_path) as package_zip:
-                manifest = ET.fromstring(package_zip.read("assembly.xml"))
+                assembly_bytes = package_zip.read("assembly.xml")
+                assembly_text = assembly_bytes.decode("utf-8")
+                self.assertIn('version="2.2"', assembly_text)
+                self.assertIn("<description><![CDATA[", assembly_text)
+                manifest = ET.fromstring(assembly_bytes)
                 top_level_targets = [
                     (node.text or "").replace("/", "\\")
                     for node in manifest.findall("./content/add")
@@ -59,6 +63,7 @@ class ModsOnlyPackageTests(unittest.TestCase):
 
                 xml_adds = xml_command.findall("./add")
                 self.assertEqual(len(xml_adds), 1)
+                self.assertEqual(xml_adds[0].attrib.get("append"), "Last")
                 self.assertEqual(
                     xml_adds[0].findtext("./Item"),
                     "dlcpacks:/BMW_M5/",
