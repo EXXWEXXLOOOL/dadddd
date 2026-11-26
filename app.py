@@ -187,7 +187,7 @@ def build_openiv_package(
             add_node = ET.SubElement(
                 content,
                 "add",
-                {"source": str(package_source).replace("\\", "/")},
+                {"source": str(package_source)},
             )
             add_node.text = target_text
 
