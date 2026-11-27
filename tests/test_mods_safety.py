@@ -42,7 +42,7 @@ class ModsOnlyPackageTests(unittest.TestCase):
                 assembly_bytes = package_zip.read("assembly.xml")
                 assembly_text = assembly_bytes.decode("utf-8")
                 self.assertIn('version="2.2"', assembly_text)
-                self.assertIn("<description><![CDATA[", assembly_text)
+                self.assertIn('footerLink="https://github.com/EXXWEXXLOOOL/dadddd"', assembly_text)
                 manifest = ET.fromstring(assembly_bytes)
                 top_level_targets = [
                     (node.text or "").replace("/", "\\")
