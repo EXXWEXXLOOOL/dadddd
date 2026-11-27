@@ -306,7 +306,7 @@ def build_openiv_package(
                 )
         for node in manifest.findall(".//archive"):
             target = node.attrib.get("path", "").replace("/", "\\").lower()
-            if target != r"update\\update.rpf":
+            if target != r"update\update.rpf":
                 raise PermissionError(
                     f"OIV-пакет содержит неожиданный путь RPF: {node.attrib.get('path')}"
                 )
