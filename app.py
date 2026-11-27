@@ -657,14 +657,16 @@ class InstallerApp:
                 ),
                 "",
                 (
-                    "Файл .oiv передан приложению Windows по умолчанию. Убедись, что это OpenIV "
-                    f"и в нём выбрана эта же папка GTA V: {game_root}. "
-                    "Когда OpenIV спросит место установки, выбери Game folder / корень игры "
-                    "и обязательно оставь включённой опцию Use mods Folder. OpenIV сам направит "
-                    "пути в mods. Затем нажми Install."
+                    "Windows запустила приложение, связанное с .oiv. Это ещё не означает, "
+                    "что открылось окно установки. Если OpenIV показал только главное окно, "
+                    "открой Tools → Package Installer и вручную выбери файл .oiv ниже. "
+                    f"Проверь, что выбрана GTA V Legacy из этой папки: {game_root}. "
+                    "При выборе назначения укажи Game folder / корень игры и оставь включённой "
+                    "опцию Use mods Folder. Затем проверь список операций и нажми Install."
                     if opened
-                    else "Не удалось автоматически открыть OpenIV. "
-                    "Дважды щёлкни по подготовленному .oiv-файлу вручную."
+                    else "Windows не смогла автоматически открыть .oiv. "
+                    "Запусти OpenIV, выбери Tools → Package Installer и вручную открой "
+                    "файл .oiv по пути ниже."
                 ),
                 f"Пакет: {package_path}",
                 "",
@@ -678,9 +680,9 @@ class InstallerApp:
 
     def _finish(self, success, message):
         self.install_button.configure(state="normal")
-        self.status.set("Готово." if success else "Ошибка установки.")
+        self.status.set("Пакет подготовлен." if success else "Ошибка подготовки.")
         if success:
-            messagebox.showinfo("Установка завершена", message)
+            messagebox.showinfo("Пакет готов к установке", message)
         else:
             messagebox.showerror("Ошибка установки", message)
 
