@@ -59,11 +59,11 @@ jobs:
           5. Select the GTA V Legacy root folder (the folder containing GTA5.exe).
           6. Drop one ZIP/RAR containing one or more DLC folders, or select a folder.
           7. Leave the DLC name field empty for batch installs.
-          8. Review the generated OIV package in OpenIV. When asked for the install
-             location, choose Game folder / game root, not Mods folder. The package
-             already contains targets starting with mods\.
-          
-          This build is for GTA V Legacy. It does not install into GTA V Enhanced.
+          8. If only the OpenIV main window opens, choose Tools > Package Installer
+             and select the generated OIV file shown by the app.
+          9. Keep Use mods Folder enabled. When asked for the install location,
+             choose Game folder / game root; OIV targets are relative to that root.
+                    This build is for GTA V Legacy. It does not install into GTA V Enhanced.
           The installer targets game files only under GTA V\mods.
           '@ | Set-Content -Path package/INSTALL.txt -Encoding UTF8
           Compress-Archive -Path package/* -DestinationPath GTA5-Addon-Installer-Windows.zip -Force
