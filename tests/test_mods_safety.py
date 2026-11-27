@@ -52,7 +52,7 @@ class ModsOnlyPackageTests(unittest.TestCase):
                 self.assertTrue(all(path.lower().startswith("update\\x64\\dlcpacks\\") for path in top_level_targets))
                 package_members = set(package_zip.namelist())
                 package_sources = [
-                    node.attrib["source"].replace("\\\\", "/")
+                    node.attrib["source"].replace("\\", "/")
                     for node in manifest.findall("./content/add")
                 ]
                 self.assertTrue(
